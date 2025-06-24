@@ -102,7 +102,7 @@ function buildXmlTree(files) {
       xmlParent.ele('file', { name: node.name, path: node.path }).txt(node.content);
     }
   }
-  const root = create({ version: '1.0' }).ele('repository');
+  const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('repository');
   files.forEach(f => buildNode(f, root));
   return root.end({ prettyPrint: true });
 }
