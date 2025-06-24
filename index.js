@@ -6,12 +6,21 @@ import fs from 'fs';
 import path from 'path';
 import { create } from 'xmlbuilder2';
 import { fileURLToPath } from 'url';
+import { isBinaryFileSync } from 'isbinaryfile';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Default exclusions
 const DEFAULT_EXCLUDES = ['node_modules', '.git', '.DS_Store'];
+const DEFAULT_FILE_SIZE_LIMIT = 1024 * 1024; // 1MB
+
+// Enhanced logger
+const log = {
+  info: (msg) => console.log(`\x1b[36m[INFO]\x1b[0m ${msg}`),
+  warn: (msg) => console.warn(`\x1b[33m[WARN]\x1b[0m ${msg}`),
+  error: (msg) => console.error(`\x1b[31m[ERROR]\x1b[0m ${msg}`)
+};
 
 async function promptRepoSource() {
   const { source } = await inquirer.prompt([
@@ -78,18 +87,82 @@ async function promptExcludes(defaults) {
   return excludes;
 }
 
-function walkDir(dir, excludes, files = []) {
-  fs.readdirSync(dir).forEach(file => {
+async function promptFileSizeLimit() {
+  const { fileSizeLimit } = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'fileSizeLimit',
+      message: 'Enter max file size to include (in bytes, default 1048576 = 1MB):',
+      default: DEFAULT_FILE_SIZE_LIMIT,
+      validate: input => isNaN(Number(input)) || Number(input) <= 0 ? 'Enter a positive number.' : true
+    },
+  ]);
+  return Number(fileSizeLimit);
+}
+
+async function promptOutputFormat() {
+  const { format } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'format',
+      message: 'Select output format:',
+      choices: ['XML', 'TXT'],
+      default: 'XML',
+    },
+  ]);
+  return format;
+}
+
+function walkDir(dir, excludes, fileSizeLimit, files = []) {
+  let dirEntries;
+  try {
+    dirEntries = fs.readdirSync(dir);
+  } catch (err) {
+    log.error(`Failed to read directory: ${dir} (${err.message})`);
+    return files;
+  }
+  for (const file of dirEntries) {
     const fullPath = path.join(dir, file);
     const relPath = path.relative(process.cwd(), fullPath);
-    if (excludes.some(ex => relPath.includes(ex))) return;
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      files.push({ type: 'directory', name: file, path: relPath, children: walkDir(fullPath, excludes, []) });
-    } else {
-      files.push({ type: 'file', name: file, path: relPath, content: fs.readFileSync(fullPath, 'utf8') });
+    if (excludes.some(ex => relPath.includes(ex))) {
+      log.info(`Excluded: ${relPath}`);
+      continue;
     }
-  });
+    let stat;
+    try {
+      stat = fs.statSync(fullPath);
+    } catch (err) {
+      log.error(`Failed to stat: ${relPath} (${err.message})`);
+      continue;
+    }
+    if (stat.isDirectory()) {
+      files.push({ type: 'directory', name: file, path: relPath, children: walkDir(fullPath, excludes, fileSizeLimit, []) });
+    } else {
+      if (stat.size > fileSizeLimit) {
+        log.warn(`Skipped (too large): ${relPath} (${stat.size} bytes)`);
+        continue;
+      }
+      let isBinary = false;
+      try {
+        isBinary = isBinaryFileSync(fullPath);
+      } catch (err) {
+        log.error(`Binary check failed: ${relPath} (${err.message})`);
+        continue;
+      }
+      if (isBinary) {
+        log.warn(`Skipped (binary): ${relPath}`);
+        continue;
+      }
+      let content = '';
+      try {
+        content = fs.readFileSync(fullPath, 'utf8');
+      } catch (err) {
+        log.error(`Failed to read: ${relPath} (${err.message})`);
+        continue;
+      }
+      files.push({ type: 'file', name: file, path: relPath, content });
+    }
+  }
   return files;
 }
 
@@ -107,38 +180,86 @@ function buildXmlTree(files) {
   return root.end({ prettyPrint: true });
 }
 
-async function main() {
-  const source = await promptRepoSource();
-  let repoPath = '';
-  if (source === 'Clone from GitHub') {
-    const url = await promptRepoUrl();
-    const auth = await promptAuth();
-    const tempDir = path.join(process.cwd(), 'temp_repo');
-    if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
-    const git = simpleGit();
-    let cloneUrl = url;
-    if (auth) {
-      const urlObj = new URL(url);
-      urlObj.username = auth.username;
-      urlObj.password = auth.token;
-      cloneUrl = urlObj.toString();
+function buildTxtOutput(files, output = [], parentPath = '') {
+  for (const node of files) {
+    if (node.type === 'directory') {
+      buildTxtOutput(node.children, output, path.join(parentPath, node.name));
+    } else {
+      output.push(`--- FILE: ${path.join(parentPath, node.name)} ---\n`);
+      output.push(node.content + '\n');
     }
-    await git.clone(cloneUrl, tempDir);
-    repoPath = tempDir;
-  } else {
-    repoPath = await promptLocalPath();
   }
-  const excludes = await promptExcludes(DEFAULT_EXCLUDES);
-  const files = walkDir(repoPath, excludes);
-  const xml = buildXmlTree(files);
-  const { outDir, outFile } = await inquirer.prompt([
-    { type: 'input', name: 'outDir', message: 'Enter the output directory for the XML file:', default: process.cwd() },
-    { type: 'input', name: 'outFile', message: 'Enter output XML filename:', default: 'repo.xml' }
-  ]);
-  const outPath = path.join(outDir, outFile);
-  fs.writeFileSync(outPath, xml, 'utf8');
-  console.log(`XML file written to ${outPath}`);
-  if (repoPath.endsWith('temp_repo')) fs.rmSync(repoPath, { recursive: true, force: true });
+  return output.join('');
+}
+
+async function main() {
+  try {
+    const source = await promptRepoSource();
+    let repoPath = '';
+    if (source === 'Clone from GitHub') {
+      const url = await promptRepoUrl();
+      const auth = await promptAuth();
+      const tempDir = path.join(process.cwd(), 'temp_repo');
+      if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
+      const git = simpleGit();
+      let cloneUrl = url;
+      if (auth) {
+        try {
+          const urlObj = new URL(url);
+          urlObj.username = auth.username;
+          urlObj.password = auth.token;
+          cloneUrl = urlObj.toString();
+        } catch (err) {
+          log.error(`Invalid URL: ${url} (${err.message})`);
+          return;
+        }
+      }
+      try {
+        log.info(`Cloning repository...`);
+        await git.clone(cloneUrl, tempDir);
+      } catch (err) {
+        log.error(`Git clone failed: ${err.message}`);
+        return;
+      }
+      repoPath = tempDir;
+    } else {
+      repoPath = await promptLocalPath();
+    }
+    const excludes = await promptExcludes(DEFAULT_EXCLUDES);
+    const fileSizeLimit = await promptFileSizeLimit();
+    log.info(`Walking directory and building file list...`);
+    const files = walkDir(repoPath, excludes, fileSizeLimit);
+    const outputFormat = await promptOutputFormat();
+    let outputData;
+    if (outputFormat === 'TXT') {
+      log.info('Building TXT output...');
+      outputData = buildTxtOutput(files);
+    } else {
+      log.info('Building XML tree...');
+      outputData = buildXmlTree(files);
+    }
+    const { outDir, outFile } = await inquirer.prompt([
+      { type: 'input', name: 'outDir', message: 'Enter the output directory for the output file:', default: process.cwd() },
+      { type: 'input', name: 'outFile', message: `Enter output ${outputFormat} filename:`, default: outputFormat === 'TXT' ? 'repo.txt' : 'repo.xml' }
+    ]);
+    const outPath = path.join(outDir, outFile);
+    try {
+      fs.writeFileSync(outPath, outputData, 'utf8');
+      log.info(`${outputFormat} file written to ${outPath}`);
+    } catch (err) {
+      log.error(`Failed to write output: ${err.message}`);
+    }
+    if (repoPath.endsWith('temp_repo')) {
+      try {
+        fs.rmSync(repoPath, { recursive: true, force: true });
+        log.info(`Cleaned up temporary repo directory.`);
+      } catch (err) {
+        log.warn(`Failed to clean up temp repo: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    log.error(`Fatal error: ${err.message}`);
+  }
 }
 
 main();
