@@ -1,0 +1,26 @@
+{
+  "name": "repotoxml",
+  "version": "1.0.0",
+  "description": "This is a Node.js terminal application that converts a GitHub repository (public or private) or a local repository to a single XML file for LLM input.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NewmanJustice/RepoToXML.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/NewmanJustice/RepoToXML/issues"
+  },
+  "homepage": "https://github.com/NewmanJustice/RepoToXML#readme",
+  "dependencies": {
+    "inquirer": "^12.6.3",
+    "simple-git": "^3.28.0",
+    "xmlbuilder2": "^3.1.1"
+  }
+}
