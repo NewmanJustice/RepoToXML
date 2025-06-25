@@ -7,6 +7,7 @@ import path from 'path';
 import { create } from 'xmlbuilder2';
 import { fileURLToPath } from 'url';
 import { isBinaryFileSync } from 'isbinaryfile';
+import os from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,14 +239,41 @@ async function main() {
       log.info('Building XML tree...');
       outputData = buildXmlTree(files);
     }
-    const { outDir, outFile } = await inquirer.prompt([
-      { type: 'input', name: 'outDir', message: 'Enter the output directory for the output file:', default: process.cwd() },
+    // Prompt for output directory: Desktop or custom
+    const { outDirChoice } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'outDirChoice',
+        message: 'Where do you want to save the output file?',
+        choices: [
+          { name: "Desktop", value: "desktop" },
+          { name: "Specify a directory", value: "custom" }
+        ],
+        default: 'desktop'
+      }
+    ]);
+    let outDir;
+    if (outDirChoice === 'desktop') {
+      outDir = path.join(os.homedir(), 'Desktop');
+    } else {
+      const { customDir } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'customDir',
+          message: 'Enter the output directory for the output file:',
+          default: process.cwd()
+        }
+      ]);
+      outDir = customDir;
+    }
+    const { outFile } = await inquirer.prompt([
       { type: 'input', name: 'outFile', message: `Enter output ${outputFormat} filename:`, default: outputFormat === 'TXT' ? 'repo.txt' : 'repo.xml' }
     ]);
     const outPath = path.join(outDir, outFile);
     try {
       fs.writeFileSync(outPath, outputData, 'utf8');
       log.info(`${outputFormat} file written to ${outPath}`);
+      console.log('\x1b[32mSuccess!\x1b[0m Your file has been generated.');
     } catch (err) {
       log.error(`Failed to write output: ${err.message}`);
     }
@@ -262,4 +290,25 @@ async function main() {
   }
 }
 
-main();
+async function runApp() {
+  let again = true;
+  while (again) {
+    await main();
+    const { nextAction } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'nextAction',
+        message: 'What would you like to do next?',
+        choices: [
+          { name: 'Transform another repo', value: 'again' },
+          { name: 'Exit', value: 'exit' }
+        ],
+        default: 'exit'
+      }
+    ]);
+    again = nextAction === 'again';
+  }
+  console.log('Goodbye!');
+}
+
+runApp();
